@@ -1,0 +1,417 @@
+/* WorkLink web prototype - state + business logic (single source of truth). */
+const S = {
+  splashSeen: false,
+  role: null,
+  user: null,
+  tab: { customer: 'home', worker: 'dash', student: 'jobs' },
+  stack: [],
+  theme: 'dark',
+  demo: { auto: true, fast: false, mode: 'mixed', forced: 'auto' },
+  area: AREAS[0],
+  workers: [],
+  bookings: [],
+  notifications: [],
+  applications: [],
+  slots: {},
+  verif: {
+    customer: { status: 'verified', note: null },
+    worker: { status: 'verified', note: null },
+    student: { status: 'verified', note: null },
+  },
+  disc: { cat: null, q: '', avail: false, verified: false },
+  jobFilter: { type: null, q: '' },
+  toast: null,
+  seq: 1,
+};
+
+const timers = {};
+function later(key, secs, fn) {
+  clearTimeout(timers[key]);
+  timers[key] = setTimeout(() => { fn(); render(); }, (secs * 1000) / (S.demo.fast ? 3 : 1));
+}
+function clearLater(key) { clearTimeout(timers[key]); }
+const uid = (p) => p + S.seq++;
+const rupees = (n) => '₹' + Number(n).toLocaleString('en-IN');
+const round10 = (n) => Math.round(n / 10) * 10;
+const rand = (n) => Math.floor(Math.random() * n);
+
+function distanceKm(a, b) {
+  const R = 6371, rad = (d) => (d * Math.PI) / 180;
+  const dLat = rad(b.lat - a.lat), dLng = rad(b.lng - a.lng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+const etaMin = (km) => Math.max(8, Math.round((km / 22) * 60) + 6);
+const distLabel = (km) => (km < 1 ? Math.round(km * 1000) + ' m' : km.toFixed(1) + ' km');
+
+/* ---------- toast + notifications ---------- */
+let toastTimer;
+function toast(msg, error = false) {
+  S.toast = { msg, error };
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { S.toast = null; render(); }, 2600);
+}
+function notify(role, title, body, bookingId) {
+  S.notifications.unshift({ id: uid('n'), role, title, body, bookingId, read: false, at: Date.now() });
+  if (S.role === role) toast(title + ': ' + body);
+}
+const notificationsFor = (r) => S.notifications.filter((n) => n.role === r);
+const unread = (r) => S.notifications.filter((n) => n.role === r && !n.read).length;
+function markAllRead(r) { S.notifications.forEach((n) => { if (n.role === r) n.read = true; }); }
+
+/* ---------- seed ---------- */
+function placeWorkers() {
+  S.workers.forEach((w) => { w.location = { lat: S.area.lat + w.dLat, lng: S.area.lng + w.dLng }; });
+}
+function makeReviews(seed) {
+  return [0, 1, 2].map((i) => ({
+    author: REVIEW_NAMES[(seed + i * 2) % REVIEW_NAMES.length],
+    rating: i === 2 ? 4 : 5,
+    text: REVIEW_TEXTS[(seed + i) % REVIEW_TEXTS.length],
+    date: Date.now() - (6 + i * 11 + seed) * 864e5,
+  }));
+}
+function seed() {
+  S.workers = WORKER_DEFS.map((d, i) => ({
+    id: d[0], name: d[1], categoryId: d[2], years: d[3], rating: d[4], reviewCount: d[5], price: d[6],
+    verification: d[7], available: d[8], dLat: d[9], dLng: d[10], bio: d[11], jobs: d[12],
+    skills: SKILLS[d[2]].slice(0, 4), reviews: makeReviews(i), human: d[0] === 'w01',
+  }));
+  placeWorkers();
+  const w = (id) => S.workers.find((x) => x.id === id);
+  const done = (custId, custName, wk, price, daysAgo, stars, text) => {
+    const t = Date.now() - daysAgo * 864e5;
+    S.bookings.push({
+      id: uid('b'), customerId: custId, customerName: custName, workerId: wk.id, categoryId: wk.categoryId,
+      status: 'completed', offers: [{ by: 'customer', amount: price, note: '' }], price, paid: true,
+      messages: [{ from: 'system', text: 'Job completed.', at: t }], review: { stars, text }, createdAt: t, completedAt: t,
+      km: 2.1, eta: 11, tried: [wk.id],
+    });
+  };
+  done('c01', 'Aarav Mehta', w('w04'), 300, 12, 5, 'Fixed the leak quickly and left the place clean.');
+  done('c01', 'Aarav Mehta', w('w08'), 480, 25, 4, 'Good deep cleaning, slightly late.');
+  [[420, 0], [350, 1], [500, 1], [380, 2], [350, 3], [450, 4], [400, 5], [350, 6]].forEach(([p, d], i) =>
+    done('x' + i, SIM_CUSTOMERS[i % SIM_CUSTOMERS.length], w('w01'), p, d, 5, 'Good work.'));
+  S.notifications.push({ id: uid('n'), role: 'customer', title: 'Welcome to WorkLink', body: 'Browse workers near you and send your first request.', read: false, at: Date.now() });
+  S.notifications.push({ id: uid('n'), role: 'worker', title: 'Welcome, Arjun', body: 'Go online to start receiving job requests.', read: false, at: Date.now() });
+  S.notifications.push({ id: uid('n'), role: 'student', title: 'New gigs nearby', body: '8 campus-style gigs are open this week.', read: false, at: Date.now() });
+}
+
+/* ---------- auth + navigation ---------- */
+function login(role, who, pw) {
+  const a = ACCOUNTS.find((x) => x.role === role && (x.email === who.trim().toLowerCase() || x.phone === who.trim()) && x.pw === pw);
+  if (!a) return false;
+  enter(a);
+  return true;
+}
+function enter(a) { S.role = a.role; S.user = a; S.stack = []; toast('Signed in as ' + a.name); }
+const loginDemo = (role) => enter(ACCOUNTS.find((a) => a.role === role));
+function logout() { S.role = null; S.user = null; S.stack = []; }
+const push = (name, params = {}) => S.stack.push({ name, ...params });
+const pop = () => S.stack.pop();
+const setTab = (t) => { S.stack = []; S.tab[S.role] = t; };
+
+/* ---------- ranking ---------- */
+const userLocation = () => S.area;
+function rank({ categoryId = null, availableOnly = false, verifiedOnly = false, maxKm = 25, query = '' } = {}) {
+  const q = query.trim().toLowerCase();
+  const out = [];
+  for (const w of S.workers) {
+    if (w.verification === 'rejected') continue;
+    if (categoryId && w.categoryId !== categoryId) continue;
+    if (availableOnly && !w.available) continue;
+    if (verifiedOnly && w.verification !== 'verified') continue;
+    if (q && !(`${w.name} ${catById(w.categoryId).name} ${w.skills.join(' ')}`.toLowerCase().includes(q))) continue;
+    const km = distanceKm(userLocation(), w.location);
+    if (km > maxKm) continue;
+    out.push({ worker: w, km, eta: etaMin(km) });
+  }
+  return out.sort((a, b) => a.km - b.km);
+}
+const eligibleFor = (cat) => rank({ categoryId: cat, availableOnly: true, verifiedOnly: true });
+const workerById = (id) => S.workers.find((w) => w.id === id);
+const bookingById = (id) => S.bookings.find((b) => b.id === id);
+function setArea(name) { S.area = AREAS.find((a) => a.name === name) || S.area; placeWorkers(); }
+
+/* ---------- verification ---------- */
+function submitVerification(role) {
+  S.verif[role] = { status: 'pending', note: 'Documents received. Admin review in progress (simulated).' };
+  syncWorkerVerification(role);
+  if (S.demo.forced === 'pending') return;
+  later('verif-' + role, 4, () => {
+    if (S.demo.forced === 'rejected') setVerification(role, 'rejected', 'Document photo was unclear. Please re-submit (simulated).');
+    else setVerification(role, 'verified', 'Identity verified (simulated).');
+  });
+}
+function setVerification(role, status, note) {
+  S.verif[role] = { status, note: note || null };
+  syncWorkerVerification(role);
+  notify(role, 'Verification ' + status, note || 'Status updated.');
+}
+function syncWorkerVerification(role) {
+  if (role !== 'worker') return;
+  const w = workerById('w01');
+  if (w) { w.verification = S.verif.worker.status; if (w.verification !== 'verified') w.available = false; }
+}
+function setAvailability(v) {
+  const w = workerById('w01');
+  if (v && S.verif.worker.status !== 'verified') { toast('Complete verification before going online', true); return false; }
+  w.available = v;
+  toast(v ? 'You are online' : 'You are offline');
+  return true;
+}
+
+/* ---------- bookings ---------- */
+function createBooking(workerId, offer, note = '') {
+  const w = workerById(workerId);
+  const km = distanceKm(userLocation(), w.location);
+  const b = {
+    id: uid('b'), customerId: S.user.id, customerName: S.user.name, workerId, categoryId: w.categoryId,
+    status: 'awaitingWorker', offers: [{ by: 'customer', amount: offer, note }], price: null, paid: false,
+    messages: [{ from: 'system', text: 'Request sent to ' + w.name + '.', at: Date.now() }], review: null,
+    createdAt: Date.now(), km, eta: etaMin(km), tried: [workerId], sim: false,
+  };
+  S.bookings.unshift(b);
+  dispatch(b);
+  return b;
+}
+function dispatch(b) {
+  const w = workerById(b.workerId);
+  b.km = distanceKm(b.sim ? { lat: w.location.lat + 0.01, lng: w.location.lng } : userLocation(), w.location);
+  b.eta = etaMin(b.km);
+  if (w.human) {
+    notify('worker', 'New job request', `${b.customerName} - ${catById(b.categoryId).name} - offer ${rupees(b.offers[b.offers.length - 1].amount)}`, b.id);
+    return;
+  }
+  if (!S.demo.auto) return;
+  if (S.demo.mode === 'none') later(b.id, 14, () => declineBooking(b, `No response from ${w.name} (timed out)`));
+  else later(b.id, 4 + rand(3), () => autoRespond(b.id));
+}
+function counterAmount(offer, ref) {
+  const raw = round10(offer + (ref - offer) * 0.7);
+  return Math.max(offer + 10, Math.min(ref, raw));
+}
+function autoRespond(id) {
+  const b = bookingById(id);
+  if (!b || b.status !== 'awaitingWorker') return;
+  const w = workerById(b.workerId);
+  const offer = b.offers[b.offers.length - 1].amount;
+  let mode = S.demo.mode;
+  if (mode === 'mixed') {
+    if (offer >= w.price * 0.9) mode = 'accept';
+    else { const r = Math.random(); mode = r < 0.7 ? 'counter' : r < 0.85 ? 'accept' : 'decline'; }
+  }
+  if (mode === 'accept' || offer >= w.price) confirmBooking(b, offer);
+  else if (mode === 'counter') workerCountered(b, counterAmount(offer, w.price), 'My usual rate is a bit higher, can we meet here?');
+  else declineBooking(b, `${w.name} is not available for this job`);
+}
+function workerCountered(b, amount, note) {
+  b.offers.push({ by: 'worker', amount, note: note || '' });
+  b.status = 'counterReceived';
+  b.messages.push({ from: 'system', text: `${workerById(b.workerId).name} countered with ${rupees(amount)}.`, at: Date.now() });
+  notify('customer', 'Counter-offer received', `${rupees(amount)} for ${catById(b.categoryId).name}`, b.id);
+}
+function declineBooking(b, reason) {
+  b.status = 'rejected';
+  b.messages.push({ from: 'system', text: reason, at: Date.now() });
+  notify(b.sim ? 'worker' : 'customer', 'Request declined', reason, b.id);
+}
+function confirmBooking(b, amount) {
+  clearLater(b.id);
+  b.status = 'confirmed';
+  b.price = amount;
+  b.messages.push({ from: 'system', text: `Booking confirmed at ${rupees(amount)}.`, at: Date.now() });
+  const w = workerById(b.workerId);
+  notify('customer', 'Booking confirmed', `${w.name} - ${rupees(amount)} - ETA ${b.eta} min`, b.id);
+  if (w.human) notify('worker', 'Booking confirmed', `${b.customerName} - ${rupees(amount)}`, b.id);
+  if (!w.human && S.demo.auto) {
+    later(b.id, 5, () => advance(b.id, 'confirmed', 'onTheWay'));
+  }
+}
+function advance(id, from, to) {
+  const b = bookingById(id);
+  if (!b || b.status !== from) return;
+  b.status = to;
+  const labels = { onTheWay: 'is on the way', workStarted: 'has started work', completed: 'completed the job' };
+  b.messages.push({ from: 'system', text: `${workerById(b.workerId).name} ${labels[to]}.`, at: Date.now() });
+  if (to === 'completed') { b.completedAt = Date.now(); notify('customer', 'Job completed', 'Please pay and leave a review.', b.id); }
+  else notify('customer', 'Status update', `${workerById(b.workerId).name} ${labels[to]}.`, b.id);
+  if (!workerById(b.workerId).human && S.demo.auto) {
+    if (to === 'onTheWay') later(b.id, 6, () => advance(id, 'onTheWay', 'workStarted'));
+    if (to === 'workStarted') later(b.id, 7, () => advance(id, 'workStarted', 'completed'));
+  }
+}
+/* customer actions */
+function customerAcceptCounter(id) {
+  const b = bookingById(id);
+  if (b && b.status === 'counterReceived') confirmBooking(b, b.offers[b.offers.length - 1].amount);
+}
+function customerCounter(id, amount, note = '') {
+  const b = bookingById(id);
+  if (!b) return;
+  b.offers.push({ by: 'customer', amount, note });
+  b.status = 'awaitingWorker';
+  const w = workerById(b.workerId);
+  if (w.human) { notify('worker', 'New counter-offer', `${b.customerName} offered ${rupees(amount)}`, b.id); return; }
+  if (!S.demo.auto) return;
+  later(b.id, 4, () => {
+    const last = [...b.offers].reverse().find((o) => o.by === 'worker');
+    const ref = last ? last.amount : w.price;
+    if (S.demo.mode === 'decline') declineBooking(b, `${w.name} declined the offer`);
+    else if (S.demo.mode === 'counter' && amount < ref - 40) workerCountered(b, round10((amount + ref) / 2) > amount ? round10((amount + ref) / 2) : amount + 10, 'Closer, but I need a little more.');
+    else if (amount >= ref - 40 || S.demo.mode === 'accept' || Math.random() < 0.6) confirmBooking(b, amount);
+    else declineBooking(b, `${w.name} could not agree on a price`);
+  });
+}
+function customerDecline(id) {
+  const b = bookingById(id);
+  if (!b) return;
+  b.status = 'cancelled';
+  b.messages.push({ from: 'system', text: 'You declined the counter-offer.', at: Date.now() });
+  clearLater(b.id);
+}
+function sendToNextCandidate(id) {
+  const b = bookingById(id);
+  const next = eligibleFor(b.categoryId).find((r) => !b.tried.includes(r.worker.id));
+  if (!next) { toast('No other available workers nearby', true); return; }
+  b.tried.push(next.worker.id);
+  b.workerId = next.worker.id;
+  b.status = 'awaitingWorker';
+  b.offers = [b.offers[0]];
+  b.messages.push({ from: 'system', text: 'Request sent to ' + next.worker.name + '.', at: Date.now() });
+  dispatch(b);
+  toast('Request sent to ' + next.worker.name);
+}
+/* worker actions (human worker w01) */
+function workerAccept(id) {
+  const b = bookingById(id);
+  if (!b || b.status !== 'awaitingWorker') return;
+  confirmBooking(b, b.offers[b.offers.length - 1].amount);
+}
+function workerCounter(id, amount, note = '') {
+  const b = bookingById(id);
+  if (!b) return;
+  b.offers.push({ by: 'worker', amount, note });
+  b.status = 'counterReceived';
+  b.messages.push({ from: 'system', text: 'You countered with ' + rupees(amount) + '.', at: Date.now() });
+  if (b.sim) {
+    later('mc-' + b.id, 4, () => {
+      if (b.status !== 'counterReceived') return;
+      if (Math.random() < 0.7) confirmBooking(b, amount);
+      else { b.status = 'rejected'; b.messages.push({ from: 'system', text: b.customerName + ' declined your counter-offer.', at: Date.now() }); notify('worker', 'Counter declined', b.customerName + ' passed on this job.', b.id); }
+    });
+  } else notify('customer', 'Counter-offer received', `${rupees(amount)} for ${catById(b.categoryId).name}`, b.id);
+}
+function workerDecline(id, reason = 'Not available for this job') {
+  const b = bookingById(id);
+  if (!b) return;
+  b.status = 'rejected';
+  b.messages.push({ from: 'system', text: 'Declined: ' + reason, at: Date.now() });
+  if (!b.sim) notify('customer', 'Request declined', workerById(b.workerId).name + ' is not available.', b.id);
+}
+function workerAdvance(id) {
+  const b = bookingById(id);
+  const next = { confirmed: 'onTheWay', onTheWay: 'workStarted', workStarted: 'completed' }[b.status];
+  if (next) advance(id, b.status, next);
+}
+function cancelBooking(id, by, reason) {
+  const b = bookingById(id);
+  if (!b || ['completed', 'cancelled', 'rejected'].includes(b.status)) return;
+  b.status = 'cancelled';
+  clearLater(b.id);
+  b.messages.push({ from: 'system', text: `Cancelled by ${by}${reason ? ': ' + reason : ''}.`, at: Date.now() });
+  toast('Booking cancelled');
+}
+function payBooking(id) {
+  const b = bookingById(id);
+  if (!b || b.paid) return;
+  b.paid = true;
+  b.messages.push({ from: 'system', text: `Payment of ${rupees(b.price)} received (simulated).`, at: Date.now() });
+  if (workerById(b.workerId).human) notify('worker', 'Payment received', `${rupees(b.price)} from ${b.customerName}`, b.id);
+  toast('Payment successful (simulated)');
+}
+function submitReview(id, stars, text) {
+  const b = bookingById(id);
+  if (!b || b.review) return;
+  b.review = { stars, text };
+  const w = workerById(b.workerId);
+  w.rating = Math.round(((w.rating * w.reviewCount + stars) / (w.reviewCount + 1)) * 10) / 10;
+  w.reviewCount += 1;
+  w.reviews.unshift({ author: b.customerName, rating: stars, text: text || 'Great service.', date: Date.now() });
+  toast('Thanks for your review');
+}
+/* chat */
+function sendMessage(id, from, text) {
+  const b = bookingById(id);
+  if (!b || !text.trim()) return;
+  b.messages.push({ from, text: text.trim(), at: Date.now() });
+  const w = workerById(b.workerId);
+  if (from === 'customer' && !w.human && S.demo.auto && !['cancelled', 'rejected', 'completed'].includes(b.status)) {
+    later('chat-' + id + '-' + b.messages.length, 2, () => {
+      b.messages.push({ from: 'worker', text: workerReply(text, b), at: Date.now() });
+      notify('customer', 'New message', w.name + ' replied', b.id);
+    });
+  }
+}
+function workerReply(q, b) {
+  const t = q.toLowerCase();
+  if (/(when|time|eta|late|reach)/.test(t)) return `I'm about ${b.eta} minutes away.`;
+  if (/(price|cost|rate|charge|pay)/.test(t)) return b.price ? `We agreed on ${rupees(b.price)}.` : 'Happy to discuss the price in the offer.';
+  if (/(where|address|location)/.test(t)) return 'Please share the landmark and I will find you.';
+  return 'Noted, see you soon.';
+}
+function simulateIncomingRequest() {
+  const w = workerById('w01');
+  if (!w.available) { toast('Go online first to receive requests', true); return; }
+  const name = SIM_CUSTOMERS[rand(SIM_CUSTOMERS.length)];
+  const offer = round10(w.price * (0.7 + Math.random() * 0.25));
+  const b = {
+    id: uid('b'), customerId: 'x' + S.seq, customerName: name, workerId: 'w01', categoryId: 'electrician',
+    status: 'awaitingWorker', offers: [{ by: 'customer', amount: offer, note: 'Fan not working, please check.' }], price: null,
+    paid: false, messages: [{ from: 'system', text: 'New request from ' + name + '.', at: Date.now() }], review: null,
+    createdAt: Date.now(), km: 1 + Math.random() * 4, eta: 12, tried: ['w01'], sim: true,
+  };
+  b.eta = etaMin(b.km);
+  S.bookings.unshift(b);
+  notify('worker', 'New job request', `${name} - Electrician - offer ${rupees(offer)}`, b.id);
+}
+/* earnings */
+const myWorkerBookings = () => S.bookings.filter((b) => b.workerId === 'w01');
+const myCustomerBookings = () => S.bookings.filter((b) => b.customerId === (S.user && S.user.id));
+function workerDailyTotals() {
+  const out = [], now = new Date();
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(now); d.setDate(now.getDate() - i); d.setHours(0, 0, 0, 0);
+    const start = d.getTime(), end = start + 864e5;
+    const total = myWorkerBookings().filter((b) => b.status === 'completed' && b.completedAt >= start && b.completedAt < end).reduce((s, b) => s + (b.price || 0), 0);
+    out.push({ label: DAYS[(d.getDay() + 6) % 7], total });
+  }
+  return out;
+}
+const workerEarned = (days) => myWorkerBookings().filter((b) => b.status === 'completed' && b.completedAt >= Date.now() - days * 864e5).reduce((s, b) => s + (b.price || 0), 0);
+
+/* ---------- student ---------- */
+function applyToJob(j) {
+  if (S.applications.some((a) => a.jobId === j.id && a.status !== 'withdrawn')) return;
+  if (S.verif.student.status !== 'verified') { toast('Complete verification before applying', true); return; }
+  const a = { id: uid('a'), jobId: j.id, status: 'applied', at: Date.now() };
+  S.applications.unshift(a);
+  toast('Application sent');
+  if (!S.demo.auto) return;
+  later('app-s-' + a.id, 4, () => { if (a.status === 'applied') { a.status = 'shortlisted'; notify('student', 'Shortlisted', j.org + ' shortlisted you for ' + j.title); } });
+  later('app-h-' + a.id, 9, () => { if (a.status === 'shortlisted') { a.status = 'hired'; notify('student', 'You are hired!', j.org + ' confirmed you for ' + j.title); } });
+}
+function withdrawApplication(id) { const a = S.applications.find((x) => x.id === id); if (a && ['applied', 'shortlisted'].includes(a.status)) { a.status = 'withdrawn'; clearLater('app-s-' + id); clearLater('app-h-' + id); } }
+function completeShift(id) { const a = S.applications.find((x) => x.id === id); if (a && a.status === 'hired') { a.status = 'completed'; a.completedAt = Date.now(); toast('Shift completed. Earnings added.'); } }
+const jobById = (id) => STUDENT_JOBS.find((j) => j.id === id);
+const studentEarned = () => S.applications.filter((a) => a.status === 'completed').reduce((s, a) => s + jobById(a.jobId).pay, 0);
+function toggleSlot(day, slot) { const k = day + '-' + slot; S.slots[k] = !S.slots[k]; }
+
+/* ---------- theme ---------- */
+function setTheme(t) {
+  S.theme = t;
+  if (t === 'system') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', t);
+  try { localStorage.setItem('worklink-theme', t); } catch (e) { /* storage unavailable */ }
+}
+seed();

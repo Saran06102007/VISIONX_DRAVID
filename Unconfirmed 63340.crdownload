@@ -1,0 +1,449 @@
+/* WorkLink web prototype - UI rendering and events (vanilla JS, no build step). */
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const initials = (n) => n.split(' ').map((p) => p[0]).slice(0, 2).join('').toUpperCase();
+const hue = (n) => [...n].reduce((a, c) => a + c.charCodeAt(0), 0) % 360;
+const stars = (r) => '★'.repeat(Math.round(r)) + '☆'.repeat(5 - Math.round(r));
+function ago(ts) {
+  const m = Math.round((Date.now() - ts) / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return m + ' min ago';
+  const h = Math.round(m / 60);
+  return h < 24 ? h + ' h ago' : Math.round(h / 24) + ' d ago';
+}
+const STATUS = {
+  awaitingWorker: ['Awaiting worker', 'warn'], counterReceived: ['Counter-offer', 'info'], confirmed: ['Confirmed', 'ok'],
+  onTheWay: ['On the way', 'ok'], workStarted: ['Work started', 'ok'], completed: ['Completed', 'ok'],
+  cancelled: ['Cancelled', 'bad'], rejected: ['Declined', 'bad'],
+};
+const VERIF = { notStarted: ['Not verified', 'warn', '🛈'], pending: ['Under review', 'info', '⏳'], verified: ['Verified', 'ok', '✔'], rejected: ['Rejected', 'bad', '✖'] };
+const UNIT = (c) => '/' + c.unit;
+const badge = (label, kind) => `<span class="badge ${kind}">${esc(label)}</span>`;
+const avatar = (name, size = 44) => `<div class="avatar" style="width:${size}px;height:${size}px;background:hsl(${hue(name)} 55% 45%)">${esc(initials(name))}</div>`;
+let draftStars = 5;
+
+/* ---------- shared pieces ---------- */
+function header(title, { back = false, bell = true } = {}) {
+  const n = S.role ? unread(S.role) : 0;
+  return `<header class="hdr">
+    ${back ? '<button class="icon-btn" data-a="back" aria-label="Back">‹</button>' : '<span class="icon-spacer"></span>'}
+    <h1>${esc(title)}</h1>
+    ${bell && S.role ? `<button class="icon-btn" data-a="notifs" aria-label="Notifications">🔔${n ? `<i class="dot">${n}</i>` : ''}</button>` : '<span class="icon-spacer"></span>'}
+  </header>`;
+}
+const card = (inner, cls = '') => `<section class="card ${cls}">${inner}</section>`;
+const btn = (label, a, data = '', kind = 'primary', extra = '') => `<button class="btn ${kind}" data-a="${a}" ${data} ${extra}>${label}</button>`;
+function empty(icon, text) { return `<div class="empty"><div>${icon}</div><p>${esc(text)}</p></div>`; }
+
+function workerCard(r) {
+  const w = r.worker, c = catById(w.categoryId), v = VERIF[w.verification];
+  return `<article class="card row click" data-a="openWorker" data-id="${w.id}">
+    ${avatar(w.name)}
+    <div class="grow">
+      <div class="between"><strong>${esc(w.name)}</strong><span class="price">${rupees(w.price)}<small>${UNIT(c)}</small></span></div>
+      <div class="muted">${c.icon} ${esc(c.name)} · ★ ${w.rating} (${w.reviewCount})</div>
+      <div class="chips">
+        ${badge(v[0], v[1])}${badge(w.available ? 'Available' : 'Offline', w.available ? 'ok' : 'warn')}
+        ${badge(distLabel(r.km) + ' · ' + r.eta + ' min', 'info')}
+      </div>
+    </div>
+  </article>`;
+}
+function bookingRow(b, forWorker) {
+  const w = workerById(b.workerId), c = catById(b.categoryId), st = STATUS[b.status];
+  const amt = b.price || b.offers[b.offers.length - 1].amount;
+  return `<article class="card click" data-a="openBooking" data-id="${b.id}">
+    <div class="between"><strong>${c.icon} ${esc(c.name)}</strong>${badge(st[0], st[1])}</div>
+    <div class="muted">${forWorker ? esc(b.customerName) : esc(w.name)} · ${rupees(amt)} · ${ago(b.createdAt)}</div>
+  </article>`;
+}
+
+/* ---------- pre-login screens ---------- */
+function splash() {
+  return `<div class="splash"><div class="logo">WL</div><h1>${'WorkLink'}</h1><p>Local Services, On Demand</p></div>`;
+}
+function roleSelect() {
+  const roles = [
+    ['customer', '🏠', 'Customer', 'Find trusted help nearby'],
+    ['worker', '🛠️', 'Worker', 'Get jobs and set your rate'],
+    ['student', '🎓', 'Student', 'Pick up flexible gigs'],
+  ];
+  return `<div class="content pad">
+    <div class="hero"><div class="logo sm">WL</div><h1>WorkLink</h1><p>Local Services, On Demand</p></div>
+    ${roles.map((r) => card(`<div class="row">
+        <div class="role-ic">${r[1]}</div>
+        <div class="grow"><strong>${r[2]}</strong><div class="muted">${r[3]}</div></div>
+      </div>
+      <div class="row gap mt">${btn('Demo', 'demoLogin', `data-role="${r[0]}"`)}${btn('Sign in', 'openLogin', `data-role="${r[0]}"`, 'ghost')}</div>`)).join('')}
+    ${btn('Demo controls', 'openDemo', '', 'ghost', 'style="width:100%"')}
+    <p class="note">Prototype: all people, prices, ratings and verification are simulated.</p>
+  </div>`;
+}
+function loginView(role) {
+  const a = ACCOUNTS.find((x) => x.role === role);
+  return header('Sign in', { back: true, bell: false }) + `<div class="content pad">
+    ${card(`<label>Email or phone</label><input id="lgUser" value="${a.email}" autocomplete="off">
+      <label>Password</label><input id="lgPw" type="password" value="demo123">
+      <p class="muted small">Demo ${role}: ${a.email} or ${a.phone} · password demo123 · OTP ${DEMO_OTP}</p>
+      ${btn('Sign in', 'doLogin', `data-role="${role}"`)}`)}
+  </div>`;
+}
+
+/* ---------- customer ---------- */
+function customerHome() {
+  const active = myCustomerBookings().filter((b) => !['completed', 'cancelled', 'rejected'].includes(b.status));
+  const near = rank({ availableOnly: true, verifiedOnly: true }).slice(0, 3);
+  return `<div class="pad">
+    <p class="muted">Hi, ${esc(S.user.name.split(' ')[0])} 👋</p>
+    <h2>What do you need today?</h2>
+    <label class="small muted">Your area (simulated location)</label>
+    <select data-in="area">${AREAS.map((a) => `<option ${a.name === S.area.name ? 'selected' : ''}>${a.name}</option>`).join('')}</select>
+    <button class="search" data-a="goDiscover">🔍 Search electricians, plumbers, cleaners…</button>
+    ${active.length ? `<h3>In progress</h3>${active.map((b) => bookingRow(b, false)).join('')}` : ''}
+    <h3>Services</h3>
+    <div class="grid3">${CATEGORIES.map((c) => `<button class="cat" data-a="goDiscover" data-cat="${c.id}"><span>${c.icon}</span>${esc(c.name)}</button>`).join('')}</div>
+    <h3>Nearest available now</h3>
+    ${near.map(workerCard).join('')}
+  </div>`;
+}
+function discover() {
+  const d = S.disc;
+  const list = rank({ categoryId: d.cat, availableOnly: d.avail, verifiedOnly: d.verified, query: d.q });
+  const eligible = d.cat ? eligibleFor(d.cat) : [];
+  return `<div class="pad">
+    <input id="discQ" data-in="discQ" placeholder="Search name or skill" value="${esc(d.q)}">
+    <div class="chips scroll">
+      <button class="chip ${!d.cat ? 'on' : ''}" data-a="setCat" data-cat="">All</button>
+      ${CATEGORIES.map((c) => `<button class="chip ${d.cat === c.id ? 'on' : ''}" data-a="setCat" data-cat="${c.id}">${c.icon} ${esc(c.name)}</button>`).join('')}
+    </div>
+    <div class="chips">
+      <button class="chip ${d.avail ? 'on' : ''}" data-a="toggleAvail">Available now</button>
+      <button class="chip ${d.verified ? 'on' : ''}" data-a="toggleVerified">Verified only</button>
+    </div>
+    ${d.cat && eligible.length ? btn(`⚡ Request nearest (${esc(eligible[0].worker.name)} · ${eligible[0].eta} min)`, 'openRequest', `data-id="${eligible[0].worker.id}"`) : ''}
+    <p class="muted small">${list.length} worker${list.length === 1 ? '' : 's'} nearby · ranked by distance</p>
+    ${list.length ? list.map(workerCard).join('') : empty('🔎', 'No workers match these filters.')}
+  </div>`;
+}
+function customerBookings() {
+  const list = myCustomerBookings();
+  return `<div class="pad">${list.length ? list.map((b) => bookingRow(b, false)).join('') : empty('📋', 'No bookings yet. Request a worker to get started.')}</div>`;
+}
+function workerDetail(id) {
+  const w = workerById(id), c = catById(w.categoryId), v = VERIF[w.verification];
+  const km = distanceKm(userLocation(), w.location);
+  return header(w.name, { back: true }) + `<div class="content pad">
+    ${card(`<div class="row">${avatar(w.name, 64)}<div class="grow"><h2>${esc(w.name)}</h2>
+      <div class="muted">${c.icon} ${esc(c.name)} · ${w.years} yrs · ${w.jobs} jobs</div>
+      <div class="chips">${badge(v[0], v[1])}${badge(w.available ? 'Available' : 'Offline', w.available ? 'ok' : 'warn')}${badge(distLabel(km) + ' · ' + etaMin(km) + ' min', 'info')}</div></div></div>
+      <p>${esc(w.bio)}</p>
+      <div class="stat-row"><div><b>★ ${w.rating}</b><span>${w.reviewCount} reviews</span></div><div><b>${rupees(w.price)}</b><span>${UNIT(c).slice(1)} rate</span></div><div><b>${w.jobs}</b><span>jobs done</span></div></div>`)}
+    ${card(`<h3>Skills</h3><div class="chips">${w.skills.map((s) => `<span class="chip">${esc(s)}</span>`).join('')}</div>`)}
+    ${card(`<h3>Recent reviews</h3>${w.reviews.slice(0, 3).map((r) => `<div class="rev"><div class="between"><strong>${esc(r.author)}</strong><span class="gold">${stars(r.rating)}</span></div><p class="muted">${esc(r.text)}</p></div>`).join('')}`)}
+    ${w.verification === 'verified' ? btn('Request booking', 'openRequest', `data-id="${w.id}"`) : `<p class="note">Only verified workers can be booked.</p>`}
+  </div>`;
+}
+function requestView(id) {
+  const w = workerById(id), c = catById(w.categoryId);
+  return header('Request booking', { back: true }) + `<div class="content pad">
+    ${card(`<div class="row">${avatar(w.name)}<div class="grow"><strong>${esc(w.name)}</strong><div class="muted">${c.icon} ${esc(c.name)} · rate ${rupees(w.price)}${UNIT(c)}</div></div></div>`)}
+    ${card(`<label>Your offer (₹) - workers may counter</label>
+      <div class="row gap"><button class="icon-btn" data-a="bump" data-d="-10">−</button><input id="offerAmt" type="number" inputmode="numeric" value="${w.price}" step="10" min="50"><button class="icon-btn" data-a="bump" data-d="10">+</button></div>
+      <label>Job details</label><textarea id="note" rows="3" placeholder="Describe the work (optional)"></textarea>`)}
+    ${btn('Send request', 'sendRequest', `data-id="${w.id}"`)}
+  </div>`;
+}
+
+/* ---------- booking detail (customer + worker) ---------- */
+function bookingView(id) {
+  const b = bookingById(id);
+  if (!b) return header('Booking', { back: true }) + '<div class="pad">Not found.</div>';
+  const w = workerById(b.workerId), c = catById(b.categoryId), st = STATUS[b.status];
+  const asWorker = S.role === 'worker';
+  const last = b.offers[b.offers.length - 1];
+  const steps = ['confirmed', 'onTheWay', 'workStarted', 'completed'];
+  const labels = ['Confirmed', 'On the way', 'Work started', 'Completed'];
+  const idx = steps.indexOf(b.status);
+  const timeline = `<div class="steps">${steps.map((s, i) => `<div class="step ${idx >= i ? 'on' : ''}"><i></i><span>${labels[i]}</span></div>`).join('')}</div>`;
+  let actions = '';
+  if (asWorker) {
+    if (b.status === 'awaitingWorker') actions = `${btn('Accept ' + rupees(last.amount), 'wAccept', `data-id="${b.id}"`)}
+      ${card(`<label>Counter-offer (₹)</label><div class="row gap"><input id="ctrAmt" type="number" value="${Math.max(last.amount + 10, w.price)}" step="10">${btn('Counter', 'wCounter', `data-id="${b.id}"`, 'ghost')}</div>`)}
+      ${btn('Decline', 'wDecline', `data-id="${b.id}"`, 'danger')}`;
+    else if (b.status === 'counterReceived') actions = '<p class="note">Waiting for the customer to respond…</p>';
+    else if (['confirmed', 'onTheWay', 'workStarted'].includes(b.status)) {
+      const next = { confirmed: 'Start travel', onTheWay: 'Start work', workStarted: 'Mark complete' }[b.status];
+      actions = btn(next, 'wAdvance', `data-id="${b.id}"`) + (b.status === 'confirmed' ? btn('Cancel job', 'cancelB', `data-id="${b.id}"`, 'danger') : '');
+    } else if (b.status === 'completed') actions = `<p class="note">${b.paid ? 'Paid ' + rupees(b.price) : 'Awaiting customer payment'} ${b.review ? '· ' + stars(b.review.stars) : ''}</p>`;
+  } else {
+    if (b.status === 'awaitingWorker') actions = '<p class="note">Waiting for the worker to respond…</p>' + btn('Cancel request', 'cancelB', `data-id="${b.id}"`, 'danger');
+    else if (b.status === 'counterReceived') actions = `${btn('Accept ' + rupees(last.amount), 'cAccept', `data-id="${b.id}"`)}
+      ${card(`<label>Your counter (₹)</label><div class="row gap"><input id="ctrAmt" type="number" value="${round10((last.amount + b.offers[0].amount) / 2)}" step="10">${btn('Counter', 'cCounter', `data-id="${b.id}"`, 'ghost')}</div>`)}
+      ${btn('Decline', 'cDecline', `data-id="${b.id}"`, 'danger')}`;
+    else if (b.status === 'rejected') actions = btn('Try next nearest worker', 'nextCand', `data-id="${b.id}"`);
+    else if (b.status === 'confirmed') actions = btn('Cancel booking', 'cancelB', `data-id="${b.id}"`, 'danger');
+    else if (b.status === 'completed' && !b.paid) actions = btn('Pay ' + rupees(b.price) + ' (simulated)', 'pay', `data-id="${b.id}"`);
+    else if (b.status === 'completed' && !b.review) actions = card(`<h3>Rate your experience</h3>
+      <div class="stars">${[1, 2, 3, 4, 5].map((n) => `<button data-a="star" data-n="${n}" class="${n <= draftStars ? 'on' : ''}">★</button>`).join('')}</div>
+      <textarea id="revText" rows="2" placeholder="Write a short review (optional)"></textarea>${btn('Submit review', 'review', `data-id="${b.id}"`)}`);
+    else if (b.status === 'completed') actions = `<p class="note">Thanks! You rated ${stars(b.review.stars)}</p>`;
+  }
+  const canChat = !['rejected', 'cancelled'].includes(b.status) && !asWorker;
+  return header('Booking', { back: true }) + `<div class="content pad">
+    ${card(`<div class="between"><h2>${c.icon} ${esc(c.name)}</h2>${badge(st[0], st[1])}</div>
+      <div class="row">${avatar(asWorker ? b.customerName : w.name)}<div class="grow"><strong>${esc(asWorker ? b.customerName : w.name)}</strong>
+      <div class="muted">${distLabel(b.km)} away · ETA ${b.eta} min</div></div><div class="price">${rupees(b.price || last.amount)}</div></div>
+      ${last.note && b.offers[0].note ? `<p class="muted">“${esc(b.offers[0].note)}”</p>` : ''}`)}
+    ${idx >= 0 || b.status === 'completed' ? card(timeline) : ''}
+    ${card(`<h3>Negotiation</h3>${b.offers.map((o) => `<div class="between"><span>${o.by === 'customer' ? (asWorker ? esc(b.customerName) : 'You') : (asWorker ? 'You' : esc(w.name))}${o.note ? `<small class="muted"> · ${esc(o.note)}</small>` : ''}</span><strong>${rupees(o.amount)}</strong></div>`).join('')}`)}
+    <div class="stack">${actions}</div>
+    ${canChat ? btn('💬 Chat', 'openChat', `data-id="${b.id}"`, 'ghost') : ''}
+    ${card(`<h3>Activity</h3>${b.messages.filter((m) => m.from === 'system').slice(-5).reverse().map((m) => `<p class="small">${esc(m.text)} <span class="muted">${ago(m.at)}</span></p>`).join('')}`)}
+  </div>`;
+}
+function chatView(id) {
+  const b = bookingById(id), w = workerById(b.workerId);
+  return header(w.name, { back: true, bell: false }) + `<div class="chat content" id="chatBox">
+    ${b.messages.map((m) => m.from === 'system' ? `<div class="sys">${esc(m.text)}</div>` : `<div class="bubble ${m.from === 'customer' ? 'me' : 'them'}">${esc(m.text)}<small>${ago(m.at)}</small></div>`).join('')}
+  </div>
+  <div class="composer"><input id="chatIn" placeholder="Message ${esc(w.name.split(' ')[0])}…" autocomplete="off"><button class="btn primary" data-a="send" data-id="${id}">Send</button></div>`;
+}
+
+/* ---------- worker ---------- */
+function workerDash() {
+  const w = workerById('w01'), mine = myWorkerBookings();
+  const incoming = mine.filter((b) => b.status === 'awaitingWorker');
+  const active = mine.filter((b) => ['confirmed', 'onTheWay', 'workStarted', 'counterReceived'].includes(b.status));
+  const v = VERIF[S.verif.worker.status];
+  return `<div class="pad">
+    ${card(`<div class="between"><div><h2>${w.available ? '🟢 Online' : '⚪ Offline'}</h2><span class="muted">${w.available ? 'Receiving job requests' : 'Go online to receive requests'}</span></div>
+      <button class="switch ${w.available ? 'on' : ''}" data-a="toggleOnline" aria-label="Toggle online"><i></i></button></div>
+      <div class="chips">${badge(v[0], v[1])}</div>`)}
+    <div class="stat-row card"><div><b>${rupees(workerEarned(1))}</b><span>Today</span></div><div><b>${rupees(workerEarned(7))}</b><span>This week</span></div><div><b>${mine.filter((b) => b.status === 'completed').length}</b><span>Jobs done</span></div></div>
+    <div class="between"><h3>Incoming requests</h3>${btn('Simulate request', 'simReq', '', 'ghost', 'style="padding:6px 10px"')}</div>
+    ${incoming.length ? incoming.map((b) => bookingRow(b, true)).join('') : empty('📨', 'No requests yet. Tap “Simulate request” to try one.')}
+    ${active.length ? `<h3>Active jobs</h3>${active.map((b) => bookingRow(b, true)).join('')}` : ''}
+  </div>`;
+}
+function workerJobs() {
+  const list = myWorkerBookings();
+  return `<div class="pad">${list.length ? list.map((b) => bookingRow(b, true)).join('') : empty('🧰', 'No jobs yet.')}</div>`;
+}
+function workerEarnings() {
+  const days = workerDailyTotals(), max = Math.max(...days.map((d) => d.total), 1);
+  const done = myWorkerBookings().filter((b) => b.status === 'completed').slice(0, 6);
+  return `<div class="pad">
+    <div class="stat-row card"><div><b>${rupees(workerEarned(1))}</b><span>Today</span></div><div><b>${rupees(workerEarned(7))}</b><span>7 days</span></div><div><b>${rupees(workerEarned(30))}</b><span>30 days</span></div></div>
+    ${card(`<h3>Last 7 days</h3><div class="bars">${days.map((d) => `<div class="bar"><span class="val">${d.total ? d.total : ''}</span><i style="height:${Math.max(4, (d.total / max) * 100)}%"></i><em>${d.label}</em></div>`).join('')}</div>`)}
+    <h3>Recent jobs</h3>${done.map((b) => `<div class="card between"><span>${esc(b.customerName)}</span><strong>${rupees(b.price)}</strong></div>`).join('')}
+  </div>`;
+}
+
+/* ---------- student ---------- */
+function studentJobs() {
+  const f = S.jobFilter;
+  const list = STUDENT_JOBS.filter((j) => (!f.type || j.type === f.type) && (!f.q || (j.title + j.org).toLowerCase().includes(f.q.toLowerCase())));
+  return `<div class="pad">
+    <input id="jobQ" data-in="jobQ" placeholder="Search gigs" value="${esc(f.q)}">
+    <div class="chips scroll"><button class="chip ${!f.type ? 'on' : ''}" data-a="jobType" data-t="">All</button>${STUDENT_TYPES.map((t) => `<button class="chip ${f.type === t ? 'on' : ''}" data-a="jobType" data-t="${t}">${t}</button>`).join('')}</div>
+    ${list.map((j) => {
+      const app = S.applications.find((a) => a.jobId === j.id && a.status !== 'withdrawn');
+      return card(`<div class="between"><strong>${esc(j.title)}</strong><span class="price">${rupees(j.pay)}<small>/shift</small></span></div>
+        <div class="muted">${esc(j.org)} · ${esc(j.where)} · ${esc(j.when)}</div><p class="small">${esc(j.desc)}</p>
+        ${app ? badge('Applied · ' + app.status, 'ok') : btn('Apply', 'apply', `data-id="${j.id}"`)}`);
+    }).join('')}
+  </div>`;
+}
+function studentApps() {
+  const apps = S.applications;
+  return `<div class="pad">
+    <div class="stat-row card"><div><b>${rupees(studentEarned())}</b><span>Earned</span></div><div><b>${apps.filter((a) => a.status === 'hired').length}</b><span>Hired</span></div><div><b>${apps.length}</b><span>Applications</span></div></div>
+    ${apps.length ? apps.map((a) => {
+      const j = jobById(a.jobId);
+      const kind = { applied: 'info', shortlisted: 'warn', hired: 'ok', completed: 'ok', withdrawn: 'bad' }[a.status];
+      return card(`<div class="between"><strong>${esc(j.title)}</strong>${badge(a.status, kind)}</div><div class="muted">${esc(j.org)} · ${rupees(j.pay)}</div>
+        <div class="row gap mt">${a.status === 'hired' ? btn('Complete shift', 'shift', `data-id="${a.id}"`) : ''}${['applied', 'shortlisted'].includes(a.status) ? btn('Withdraw', 'withdraw', `data-id="${a.id}"`, 'ghost') : ''}</div>`);
+    }).join('') : empty('📝', 'No applications yet. Browse gigs and apply.')}
+  </div>`;
+}
+function studentSchedule() {
+  return `<div class="pad"><h3>Weekly availability</h3><p class="muted small">Tap a slot to mark when you are free.</p>
+    <div class="slots"><span></span>${SLOTS.map((s) => `<b>${s.slice(0, 3)}</b>`).join('')}
+    ${DAYS.map((d) => `<b>${d}</b>${SLOTS.map((s) => `<button class="slot ${S.slots[d + '-' + s] ? 'on' : ''}" data-a="slot" data-d="${d}" data-s="${s}">${S.slots[d + '-' + s] ? '✓' : ''}</button>`).join('')}`).join('')}</div></div>`;
+}
+
+/* ---------- profile / settings ---------- */
+function profile() {
+  const role = S.role, v = VERIF[S.verif[role].status];
+  return `<div class="pad">
+    ${card(`<div class="row">${avatar(S.user.name, 64)}<div class="grow"><h2>${esc(S.user.name)}</h2><div class="muted">${role[0].toUpperCase() + role.slice(1)} · ${esc(S.user.email)}</div>${badge(v[0], v[1])}</div></div>`)}
+    ${btn('Verification', 'openVerif', '', 'ghost')}${btn('Notifications', 'notifs', '', 'ghost')}${btn('Demo controls', 'openDemo', '', 'ghost')}${btn('Sign out', 'logout', '', 'danger')}
+  </div>`;
+}
+function verificationView() {
+  const role = S.role, v = S.verif[role], vi = VERIF[v.status];
+  return header('Verification', { back: true, bell: false }) + `<div class="content pad">
+    ${card(`<div class="center big">${vi[2]}</div><h2 class="center">${vi[0]}</h2>${v.note ? `<p class="muted center">${esc(v.note)}</p>` : ''}`)}
+    ${card(`<h3>Simulated document upload</h3><p class="muted small">No real documents are stored. Submitting starts a timed admin review.</p>
+      ${btn(v.status === 'pending' ? 'Review in progress…' : 'Submit documents', 'submitVerif', '', 'primary', v.status === 'pending' ? 'disabled' : '')}`)}
+    ${card(`<h3>Demo admin override</h3><div class="chips">${['pending', 'verified', 'rejected'].map((s) => `<button class="chip" data-a="forceVerif" data-s="${s}">${VERIF[s][0]}</button>`).join('')}</div>`)}
+  </div>`;
+}
+function demoView() {
+  const d = S.demo;
+  const seg = (key, opts) => `<div class="chips">${opts.map(([val, label]) => `<button class="chip ${d[key] === val ? 'on' : ''}" data-a="demoSet" data-k="${key}" data-v="${val}">${label}</button>`).join('')}</div>`;
+  return header('Demo controls', { back: true, bell: false }) + `<div class="content pad">
+    ${card(`<h3>Auto-respond</h3><p class="muted small">Simulated workers reply on their own.</p>${seg('auto', [[true, 'On'], [false, 'Off']])}
+      <h3>Timing</h3>${seg('fast', [[false, 'Normal'], [true, 'Fast ×3']])}`)}
+    ${card(`<h3>Worker reply mode</h3>${seg('mode', [['mixed', 'Mixed'], ['accept', 'Always accept'], ['counter', 'Always counter'], ['decline', 'Always decline'], ['none', 'No response']])}`)}
+    ${card(`<h3>Forced verification outcome</h3>${seg('forced', [['auto', 'Auto'], ['rejected', 'Rejected'], ['pending', 'Stay pending']])}`)}
+    ${card(`<h3>Theme</h3><div class="chips">${['dark', 'light', 'system'].map((t) => `<button class="chip ${S.theme === t ? 'on' : ''}" data-a="theme" data-t="${t}">${t}</button>`).join('')}</div>`)}
+  </div>`;
+}
+function notificationsView() {
+  const list = notificationsFor(S.role);
+  return header('Notifications', { back: true, bell: false }) + `<div class="content pad">
+    ${list.length ? btn('Mark all read', 'readAll', '', 'ghost') : ''}
+    ${list.length ? list.map((n) => `<article class="card ${n.bookingId ? 'click' : ''}" ${n.bookingId ? `data-a="openBooking" data-id="${n.bookingId}"` : ''}>
+      <div class="between"><strong>${n.read ? '' : '<i class="unread"></i>'}${esc(n.title)}</strong><span class="muted small">${ago(n.at)}</span></div><p class="muted">${esc(n.body)}</p></article>`).join('') : empty('🔔', 'No notifications.')}
+  </div>`;
+}
+
+/* ---------- shell + router ---------- */
+const TABS = {
+  customer: [['home', '🏠', 'Home'], ['discover', '🔍', 'Discover'], ['bookings', '📋', 'Bookings'], ['profile', '👤', 'Profile']],
+  worker: [['dash', '📊', 'Dashboard'], ['jobs', '🧰', 'Jobs'], ['earn', '💰', 'Earnings'], ['profile', '👤', 'Profile']],
+  student: [['jobs', '🎓', 'Gigs'], ['apps', '📝', 'Applied'], ['sched', '🗓️', 'Schedule'], ['profile', '👤', 'Profile']],
+};
+const SCREENS = {
+  customer: { home: customerHome, discover, bookings: customerBookings, profile },
+  worker: { dash: workerDash, jobs: workerJobs, earn: workerEarnings, profile },
+  student: { jobs: studentJobs, apps: studentApps, sched: studentSchedule, profile },
+};
+function shell() {
+  const role = S.role, tab = S.tab[role], title = TABS[role].find((t) => t[0] === tab)[2];
+  return header(title === 'Home' ? 'WorkLink' : title) + `<div class="content">${SCREENS[role][tab]()}</div>
+    <nav class="tabbar">${TABS[role].map((t) => `<button class="${t[0] === tab ? 'on' : ''}" data-a="tab" data-t="${t[0]}"><span>${t[1]}</span>${t[2]}</button>`).join('')}</nav>`;
+}
+function details(top) {
+  switch (top.name) {
+    case 'login': return loginView(top.role);
+    case 'demo': return demoView();
+    case 'worker': return workerDetail(top.id);
+    case 'request': return requestView(top.id);
+    case 'booking': return bookingView(top.id);
+    case 'chat': return chatView(top.id);
+    case 'notifs': return notificationsView();
+    case 'verif': return verificationView();
+    default: return '';
+  }
+}
+function view() {
+  if (!S.splashSeen) return splash();
+  const top = S.stack[S.stack.length - 1];
+  if (top) return details(top);
+  return S.role ? shell() : roleSelect();
+}
+function render() {
+  const root = $('#app');
+  const ae = document.activeElement;
+  const keep = ae && ae.id ? { id: ae.id, v: ae.value, s: ae.selectionStart } : null;
+  const prevScroll = root.querySelector('.content') ? root.querySelector('.content').scrollTop : 0;
+  root.innerHTML = view() + (S.toast ? `<div class="toast ${S.toast.error ? 'err' : ''}" role="status">${esc(S.toast.msg)}</div>` : '');
+  const c = root.querySelector('.content');
+  if (c) c.scrollTop = c.id === 'chatBox' ? c.scrollHeight : prevScroll;
+  if (keep) {
+    const el = document.getElementById(keep.id);
+    if (el) { el.value = keep.v; el.focus(); try { el.setSelectionRange(keep.s, keep.s); } catch (e) { /* number inputs */ } }
+  }
+}
+
+/* ---------- events ---------- */
+const val = (id) => (document.getElementById(id) || {}).value || '';
+const A = {
+  back: () => { const top = S.stack[S.stack.length - 1]; pop(); if (top && top.name === 'notifs' && S.role) markAllRead(S.role); },
+  notifs: () => push('notifs'),
+  tab: (d) => setTab(d.t),
+  demoLogin: (d) => loginDemo(d.role),
+  openLogin: (d) => push('login', { role: d.role }),
+  doLogin: (d) => { if (login(d.role, val('lgUser'), val('lgPw'))) S.stack = []; else toast('Invalid credentials', true); },
+  openDemo: () => push('demo'),
+  logout: () => logout(),
+  goDiscover: (d) => { S.disc.cat = d.cat || null; S.tab.customer = 'discover'; S.stack = []; },
+  setCat: (d) => { S.disc.cat = d.cat || null; },
+  toggleAvail: () => { S.disc.avail = !S.disc.avail; },
+  toggleVerified: () => { S.disc.verified = !S.disc.verified; },
+  openWorker: (d) => push('worker', { id: d.id }),
+  openRequest: (d) => push('request', { id: d.id }),
+  bump: (d) => { const el = $('#offerAmt'); el.value = Math.max(50, Number(el.value || 0) + Number(d.d)); },
+  sendRequest: (d) => {
+    const amt = Number(val('offerAmt'));
+    if (!amt || amt < 50) return toast('Enter a valid offer', true);
+    const b = createBooking(d.id, amt, val('note').trim());
+    S.stack = [{ name: 'booking', id: b.id }];
+    S.tab.customer = 'bookings';
+    toast('Request sent');
+  },
+  openBooking: (d) => push('booking', { id: d.id }),
+  openChat: (d) => push('chat', { id: d.id }),
+  send: (d) => { const t = val('chatIn'); if (t.trim()) { sendMessage(d.id, 'customer', t); $('#chatIn').value = ''; } },
+  cAccept: (d) => customerAcceptCounter(d.id),
+  cCounter: (d) => { const a = Number(val('ctrAmt')); if (a < 50) return toast('Enter a valid amount', true); customerCounter(d.id, a); },
+  cDecline: (d) => customerDecline(d.id),
+  nextCand: (d) => sendToNextCandidate(d.id),
+  cancelB: (d) => cancelBooking(d.id, S.role),
+  pay: (d) => payBooking(d.id),
+  star: (d) => { draftStars = Number(d.n); },
+  review: (d) => { submitReview(d.id, draftStars, val('revText').trim()); draftStars = 5; },
+  wAccept: (d) => workerAccept(d.id),
+  wCounter: (d) => { const a = Number(val('ctrAmt')); if (a < 50) return toast('Enter a valid amount', true); workerCounter(d.id, a); },
+  wDecline: (d) => workerDecline(d.id),
+  wAdvance: (d) => workerAdvance(d.id),
+  toggleOnline: () => setAvailability(!workerById('w01').available),
+  simReq: () => simulateIncomingRequest(),
+  jobType: (d) => { S.jobFilter.type = d.t || null; },
+  apply: (d) => applyToJob(jobById(d.id)),
+  withdraw: (d) => withdrawApplication(d.id),
+  shift: (d) => completeShift(d.id),
+  slot: (d) => toggleSlot(d.d, d.s),
+  openVerif: () => push('verif'),
+  submitVerif: () => submitVerification(S.role),
+  forceVerif: (d) => setVerification(S.role, d.s, 'Set by demo admin override.'),
+  demoSet: (d) => { S.demo[d.k] = d.v === 'true' ? true : d.v === 'false' ? false : d.v; },
+  theme: (d) => setTheme(d.t),
+  readAll: () => markAllRead(S.role),
+};
+
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('[data-a]');
+  if (!t || t.disabled) return;
+  const fn = A[t.dataset.a];
+  if (fn) { fn(t.dataset, t); render(); }
+});
+document.addEventListener('input', (e) => {
+  const k = e.target.dataset && e.target.dataset.in;
+  if (k === 'discQ') S.disc.q = e.target.value;
+  if (k === 'jobQ') S.jobFilter.q = e.target.value;
+  if (k) render();
+});
+document.addEventListener('change', (e) => {
+  if (e.target.dataset && e.target.dataset.in === 'area') { setArea(e.target.value); render(); }
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target.id === 'chatIn') { const t = S.stack[S.stack.length - 1]; if (t) { A.send({ id: t.id }); render(); } }
+  if (e.key === 'Enter' && (e.target.id === 'lgUser' || e.target.id === 'lgPw')) { const t = S.stack[S.stack.length - 1]; A.doLogin({ role: t.role }); render(); }
+});
+
+/* ---------- boot ---------- */
+(function boot() {
+  let saved = null;
+  try { saved = localStorage.getItem('worklink-theme'); } catch (e) { /* storage unavailable */ }
+  setTheme(saved || 'dark');
+  render();
+  setTimeout(() => { S.splashSeen = true; render(); }, 1600);
+  // Refresh relative timestamps every 30 seconds.
+  setInterval(() => {
+    const top = S.stack[S.stack.length - 1];
+    if (!document.activeElement || !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) render();
+  }, 30000);
+})();

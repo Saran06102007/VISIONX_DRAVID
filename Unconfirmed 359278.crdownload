@@ -1,0 +1,88 @@
+/* WorkLink web prototype - mock data (all people, prices and ratings are simulated). */
+const CATEGORIES = [
+  { id: 'electrician', name: 'Electrician', icon: '⚡', price: 350, unit: 'visit', desc: 'Wiring, fans, switches' },
+  { id: 'plumber', name: 'Plumber', icon: '🔧', price: 300, unit: 'visit', desc: 'Leaks, taps, pipes' },
+  { id: 'carpenter', name: 'Carpenter', icon: '🪚', price: 800, unit: 'day', desc: 'Furniture, doors, repairs' },
+  { id: 'painter', name: 'Painter', icon: '🎨', price: 900, unit: 'day', desc: 'Walls, ceilings, touch-ups' },
+  { id: 'cleaner', name: 'Cleaner', icon: '🧹', price: 250, unit: 'hour', desc: 'Deep and regular cleaning' },
+  { id: 'cook', name: 'Cook', icon: '🍳', price: 450, unit: 'hour', desc: 'Home cooking, events' },
+  { id: 'maid', name: 'Maid', icon: '🏠', price: 200, unit: 'hour', desc: 'Daily household help' },
+  { id: 'appliance', name: 'Appliance Repair', icon: '🛠️', price: 400, unit: 'visit', desc: 'AC, washer, fridge' },
+  { id: 'gardener', name: 'Gardener', icon: '🌿', price: 500, unit: 'visit', desc: 'Lawn, plants, pruning' },
+];
+const catById = (id) => CATEGORIES.find((c) => c.id === id) || CATEGORIES[0];
+
+const SKILLS = {
+  electrician: ['Wiring', 'Fan repair', 'Switchboards', 'Inverter setup', 'Lighting', 'MCB / fuse'],
+  plumber: ['Leak repair', 'Tap fitting', 'Drain cleaning', 'Water tank', 'Bathroom fittings', 'Pipe laying'],
+  carpenter: ['Furniture repair', 'Door fitting', 'Modular units', 'Polishing', 'Wardrobes', 'Wood carving'],
+  painter: ['Interior', 'Exterior', 'Texture finish', 'Waterproofing', 'Wood polish', 'Touch-ups'],
+  cleaner: ['Deep cleaning', 'Kitchen', 'Bathroom', 'Sofa / carpet', 'Windows', 'Move-in cleaning'],
+  cook: ['South Indian', 'North Indian', 'Party catering', 'Tiffin', 'Baking', 'Vegan'],
+  maid: ['Sweeping & mopping', 'Dishes', 'Laundry', 'Elder care help', 'Child care help', 'Organising'],
+  appliance: ['AC service', 'Washing machine', 'Refrigerator', 'Microwave', 'Water purifier', 'TV'],
+  gardener: ['Lawn care', 'Pruning', 'Terrace garden', 'Pest control', 'Planting', 'Composting'],
+};
+
+/* Demo coordinates only. Workers are placed relative to the selected area. */
+const AREAS = [
+  { name: 'Velachery', lat: 12.9815, lng: 80.2180 },
+  { name: 'Adyar', lat: 13.0067, lng: 80.2570 },
+  { name: 'T. Nagar', lat: 13.0418, lng: 80.2341 },
+  { name: 'Tambaram', lat: 12.9249, lng: 80.1000 },
+  { name: 'Guindy', lat: 13.0067, lng: 80.2206 },
+  { name: 'Anna Nagar', lat: 13.0850, lng: 80.2101 },
+];
+
+const STUDENT_TYPES = ['Tutoring', 'Events', 'Delivery', 'Data entry', 'Shop assistance'];
+const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const SLOTS = ['Morning', 'Afternoon', 'Evening'];
+
+const REVIEW_NAMES = ['Anitha R.', 'Vijay K.', 'Sneha P.', 'Rohit S.', 'Deepa M.', 'Karan T.', 'Meera V.'];
+const REVIEW_TEXTS = [
+  'Arrived on time and explained the work clearly before starting.',
+  'Fair price and a neat finish. Would book again.',
+  'Professional, polite and quick. Cleaned up after the job.',
+  'Good work, took a little longer than estimated.',
+  'Very reliable. Fixed the issue the same day.',
+];
+
+/* [id, name, category, years, rating, reviews, price, verification, available, dLat, dLng, bio, jobs] */
+const WORKER_DEFS = [
+  ['w01', 'Arjun Kumar', 'electrician', 8, 4.8, 124, 350, 'verified', true, 0.012, 0.010, 'Licensed electrician for homes and small shops. Neat work, fair quotes.', 310],
+  ['w02', 'Suresh Babu', 'electrician', 5, 4.5, 63, 320, 'verified', true, -0.020, 0.015, 'Fan, wiring and inverter specialist.', 150],
+  ['w03', 'Imran Khan', 'electrician', 3, 4.2, 21, 280, 'pending', true, 0.030, -0.020, 'Newly joined; fast for small repairs.', 48],
+  ['w04', 'Murugan S.', 'plumber', 12, 4.9, 210, 300, 'verified', true, 0.008, -0.012, 'Leaks, tanks and bathroom fittings. Same-day visits.', 520],
+  ['w05', 'Ravi Chandran', 'plumber', 6, 4.4, 77, 280, 'verified', false, -0.025, 0.020, 'Reliable plumber, evenings and weekends.', 190],
+  ['w06', 'Karthik Raja', 'carpenter', 10, 4.7, 98, 850, 'verified', true, 0.018, 0.022, 'Furniture repair and modular kitchens.', 240],
+  ['w07', 'Selvam P.', 'painter', 15, 4.8, 134, 950, 'verified', true, -0.015, -0.018, 'Interior, exterior and texture finishes.', 330],
+  ['w08', 'Lakshmi D.', 'cleaner', 4, 4.6, 88, 240, 'verified', true, 0.010, 0.005, 'Deep cleaning for kitchens and bathrooms.', 210],
+  ['w09', 'Fatima Begum', 'cleaner', 7, 4.5, 59, 260, 'verified', true, -0.030, 0.010, 'Move-in and sofa/carpet cleaning.', 175],
+  ['w10', 'Revathi N.', 'cook', 9, 4.9, 142, 450, 'verified', true, 0.022, -0.008, 'South Indian home cooking and party catering.', 280],
+  ['w11', 'Meena K.', 'maid', 6, 4.3, 71, 200, 'verified', true, 0.006, 0.014, 'Daily help: sweeping, dishes and laundry.', 400],
+  ['w12', 'Kamala R.', 'maid', 11, 4.7, 120, 210, 'verified', true, -0.012, -0.006, 'Elder care help and organising.', 460],
+  ['w13', 'Dinesh Babu', 'appliance', 7, 4.6, 94, 420, 'verified', true, 0.015, -0.025, 'AC service and washing machine repair.', 205],
+  ['w14', 'Naveen A.', 'appliance', 2, 4.0, 14, 350, 'rejected', true, 0.040, 0.030, 'Document check failed (demo).', 20],
+  ['w15', 'Gopal S.', 'gardener', 13, 4.8, 66, 500, 'verified', true, -0.022, 0.025, 'Terrace gardens, pruning and composting.', 150],
+  ['w16', 'Prakash V.', 'painter', 4, 4.1, 30, 800, 'verified', false, 0.028, 0.012, 'Touch-ups and small repaint jobs.', 70],
+];
+
+const STUDENT_JOBS = [
+  { id: 'j1', title: 'Maths tutor for Class 8', type: 'Tutoring', org: 'Bright Minds Tuition', pay: 600, when: 'Weekdays, 5-7 PM', where: 'Velachery', desc: 'Help two students with algebra and geometry.' },
+  { id: 'j2', title: 'Event desk volunteer', type: 'Events', org: 'Campus Fest Committee', pay: 500, when: 'Sat, 9 AM-2 PM', where: 'Guindy', desc: 'Registration desk and visitor guidance.' },
+  { id: 'j3', title: 'Evening delivery rider', type: 'Delivery', org: 'QuickBite Local', pay: 450, when: 'Daily, 6-10 PM', where: 'Adyar', desc: 'Deliver orders within 3 km. Own two-wheeler needed.' },
+  { id: 'j4', title: 'Data entry assistant', type: 'Data entry', org: 'Sri Traders', pay: 700, when: 'Flexible, 4 hrs', where: 'T. Nagar', desc: 'Enter invoices into a spreadsheet.' },
+  { id: 'j5', title: 'Weekend shop assistant', type: 'Shop assistance', org: 'Anna Books', pay: 550, when: 'Sat-Sun, 10 AM-4 PM', where: 'Anna Nagar', desc: 'Billing and shelf organising at a bookstore.' },
+  { id: 'j6', title: 'Science tutor for Class 10', type: 'Tutoring', org: 'LearnWell Academy', pay: 800, when: 'Mon/Wed/Fri, 6-8 PM', where: 'Tambaram', desc: 'Physics and chemistry revision sessions.' },
+  { id: 'j7', title: 'Wedding event helper', type: 'Events', org: 'Shubh Events', pay: 900, when: 'Sun, 8 AM-3 PM', where: 'T. Nagar', desc: 'Guest assistance and decoration support.' },
+  { id: 'j8', title: 'Grocery packing assistant', type: 'Shop assistance', org: 'FreshMart', pay: 500, when: 'Weekdays, 3-7 PM', where: 'Velachery', desc: 'Pack and label orders for delivery.' },
+];
+
+const ACCOUNTS = [
+  { role: 'customer', id: 'c01', name: 'Aarav Mehta', email: 'aarav@demo.worklink', phone: '9000000001', pw: 'demo123' },
+  { role: 'worker', id: 'w01', name: 'Arjun Kumar', email: 'arjun@demo.worklink', phone: '9000000002', pw: 'demo123' },
+  { role: 'student', id: 's01', name: 'Nisha Rao', email: 'nisha@demo.worklink', phone: '9000000003', pw: 'demo123' },
+];
+
+const SIM_CUSTOMERS = ['Priya S.', 'Rahul M.', 'Divya K.', 'Vikram T.', 'Anjali P.', 'Sanjay R.'];
+const DEMO_OTP = '123456';
